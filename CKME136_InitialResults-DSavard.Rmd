@@ -1,0 +1,195 @@
+---
+output: pdf_document
+---
+---
+title: "CKME 136 - Initial Results - Assignment 3 - DSavard"
+output:
+
+
+Data loading and cleaning
+
+```{r}
+##The dataset as currently configured is available from: https://github.com/dsa845/ckme136
+##Loading data downloaded to desktop from www.kaggle.com/tmdb/tmdb-movie-metadata
+ninstall.packages('rjson')
+install.packages('tidyverse')
+install.packages('jsonlite')
+install.packages('randomForest')
+install.packages('corrplot')
+library('rjson')
+library('tidyverse')
+library('jsonlite')
+library('dplyr')
+library('randomForest')
+library('corrplot')
+movies <- read.csv("~/Desktop/Ryerson - CKME136/tmdb_5000_movies.csv", na = "NULL")
+
+##Data Cleaning
+
+##Parsing nested JSON data to integrate two most prominent genres per film (primary genre and secondary genre) within the data set
+genres <- movies %>% filter(nchar(genres)>2) %>% mutate(js = lapply(genres, fromJSON)) %>% unnest(js) %>% select(id, title, genres=name) %>% mutate_if(is.character, factor)
+genres5 <-genres
+genres5$order <- 0
+genres5$order[1] <- 1
+for(i in 1:(nrow(genres5)-1)) {if(genres5$id[i+1]!=genres5$id[i]){genres5$order[i+1] <- 1} else {genres5$order[i+1] <- (genres5$order[i])+1}}
+genres6 <- genres5 %>% filter(order < 6) %>% spread(key=order, value=genres) %>% rename(genre_1="1", genre_2="2", genre_3="3", genre_4="4", genre_5="5")
+movies_new1 <- left_join(movies, genres6 %>% select(id, genre_1, genre_2), by="id")
+
+##Parsing nested JSON data to add two production companies with most prominent billing as individual attributes in the dataset
+productioncompanies <- movies %>% filter(nchar(production_companies)>2) %>% mutate(js = lapply(production_companies, fromJSON)) %>% unnest(js) %>% select(id, title, production_companies=name) %>% mutate_if(is.character, factor)
+productioncompanies2 <-productioncompanies
+productioncompanies2$order <- 0
+productioncompanies2$order[1] <- 1
+for(i in 1:(nrow(productioncompanies2)-1)) {if(productioncompanies2$id[i+1]!=productioncompanies2$id[i]){productioncompanies2$order[i+1] <- 1} else {productioncompanies2$order[i+1] <- (productioncompanies2$order[i])+1}}
+productioncompanies3 <- productioncompanies2 %>% filter(order < 6) %>% spread(key=order, value=production_companies) %>% rename(prodcomp_1="1", prodcomp_2="2", prodcomp_3="3", prodcomp_4="4", prodcomp_5="5")
+movies_new2 <- left_join(movies_new1, productioncompanies3 %>% select(id, prodcomp_1, prodcomp_2), by="id")
+
+#Parsing nested JSON data to add two production companies with most prominent billing as individual attributes in the dataset
+productioncountries <- movies %>% filter(nchar(production_countries)>2) %>% mutate(js = lapply(production_countries, fromJSON)) %>% unnest(js) %>% select(id, title, production_countries=name) %>% mutate_if(is.character, factor)
+productioncountries2 <-productioncountries
+productioncountries2$order <- 0
+productioncountries2$order[1] <- 1
+for(i in 1:(nrow(productioncountries2)-1)) {if(productioncountries2$id[i+1]!=productioncountries2$id[i]){productioncountries2$order[i+1] <- 1} else {productioncountries2$order[i+1] <- (productioncountries2$order[i])+1}}
+productioncountries3 <- productioncountries2 %>% filter(order < 6) %>% spread(key=order, value=production_countries) %>% rename(prodcount_1="1", prodcount_2="2", prodcount_3="3", prodcount_4="4", prodcount_5="5")
+movies_new3 <- left_join(movies_new2, productioncountries3 %>% select(id, prodcount_1), by="id")
+
+##Delete duplicate attributes and those attributes outside the scope of the analysis
+movies_study <- subset(movies_new3, select = -c(genres, homepage, status, keywords, original_title, overview, production_companies, production_countries, spoken_languages, tagline))
+
+##Convert release date to create two categorical variables for month and year
+movies_study$release_year<-format(as.Date(movies_study$release_date, format="%d/%m/%Y"),"%Y")
+movies_study$release_month<-format(as.Date(movies_study$release_date, format="%d/%m/%Y"),"%m")
+movies_study <- subset(movies_study, select = -c(release_date))
+
+##Dimensionality reduction
+#Convert zeros in budget and revenue attribute columns to NAs to properly identify missing values
+movies_study$revenue[movies_study$revenue == 0] <- NA
+movies_study$budget[movies_study$budget == 0] <- NA
+
+#Count the number of missing values for each attributes
+colSums(is.na(movies_study))
+
+##Delete attributes where missing values account for approx 20% of values available
+movies_study <- subset(movies_study, select = -c(prodcomp_2, genre_2))
+
+##Treat missing values in budget column by creating a linear model to predict budget and then impute predicted values to replace NAs
+linearmodel_budget <- lm(budget ~ popularity + vote_average + genre_1 + prodcomp_1 + prodcount_1 + release_year + release_month, data = movies_study, na.action = na.omit)
+movies_study$budget[is.na(movies_study$budget)] <- predict(linearmodel_budget)
+```
+Ensuring categorical data is treated as factors
+```{r}
+movies_study$original_language <- as.factor(movies_study$original_language)
+movies_study$release_month <- as.factor(movies_study$release_month)
+movies_study$prodcomp_1 <- as.factor(movies_study$prodcomp_1)
+movies_study$prodcount_1 <- as.factor(movies_study$prodcount_1)
+movies_study$genre_1 <- as.factor(movies_study$genre_1)
+movies_study$genre_2 <- as.factor(movies_study$genre_2)
+```
+Visualizing distribution and presence of outliers
+```{r}
+budgetplot <- density(movies_study$budget)
+plot(budgetplot, main="Kernel Density of Budget")
+polygon(budgetplot, col="red", border="blue")
+
+popularityplot <- density(movies_study$popularity, na.rm = TRUE)
+plot(popularityplot, main="Kernel Density of Popularity")
+polygon(popularityplot, col="red", border="blue")
+
+revenueplot <- density(movies_study$revenue, na.rm = TRUE)
+plot(revenueplot, main="Kernel Density of Revenue")
+polygon(revenueplot, col="red", border="blue")
+
+runtimeplot <- density(movies_study$runtime, na.rm = TRUE)
+plot(runtimeplot, main="Kernel Density of Runtime")
+polygon(runtimeplot, col="red", border="blue")
+
+voteaverageplot <- density(movies_study$vote_average)
+plot(voteaverageplot, main="Kernel Density of Vote Average")
+polygon(voteaverageplot, col="red", border="blue")
+
+votecountplot <- density(movies_study$vote_count)
+plot(votecountplot, main="Kernel Density of Vote Count")
+polygon(votecountplot, col="red", border="blue")
+```
+Load IQR results to evaluate where we can afford to use the up and low iqr to eliminate attributes with outliers without significantly reducing our dataset size
+```{r}
+quantile_popularity <- quantile(movies_study$popularity, probs=c(.25, .75), na.rm = TRUE)
+quantile_revenue <- quantile(movies_study$revenue, probs=c(.25, .75), na.rm = TRUE)
+quantile_budget <- quantile(movies_study$budget, probs=c(.25, .75), na.rm = TRUE)
+quantile_vote_count <- quantile(movies_study$vote_count, probs=c(.25, .75), na.rm = TRUE)
+
+iqr_popularity <- IQR(movies_study$popularity, na.rm=TRUE)
+iqr_revenue <- IQR(movies_study$revenue, na.rm=TRUE)
+iqr_budget <- IQR(movies_study$budget, na.rm=TRUE)
+iqr_vote_count <- IQR(movies_study$vote_count, na.rm=TRUE)
+
+iqr_up_popularity <-  quantile_popularity[2]+1.5*iqr_popularity   
+iqr_low_popularity<- quantile_popularity[1]-1.5*iqr_popularity 
+iqr_up_revenue <-  quantile_revenue[2]+1.5*iqr_revenue   
+iqr_low_revenue<- quantile_revenue[1]-1.5*iqr_revenue
+iqr_up_budget <-  quantile_budget[2]+1.5*iqr_budget   
+iqr_low_budget<- quantile_budget[1]-1.5*iqr_budget 
+iqr_up_vote_count <- quantile_vote_count[2]+1.5*iqr_vote_count   
+iqr_low_vote_count<- quantile_vote_count[1]-1.5*iqr_vote_count
+
+iqr_up_popularity   
+iqr_low_popularity
+iqr_up_revenue
+iqr_low_revenue
+iqr_up_budget   
+iqr_low_budget 
+iqr_up_vote_count  
+iqr_low_vote_count
+```
+Eliminate only for popularity and vote_count attributes
+```{r}
+movies_study<- subset(movies_study, movies_study$popularity > (quantile_popularity[1] - 1.5*iqr_popularity) & movies_study$popularity < (quantile_popularity[2]+1.5*iqr_popularity))
+movies_study<- subset(movies_study, movies_study$vote_count > (quantile_vote_count[1] - 1.5*iqr_vote_count) & movies_study$vote_count < (quantile_vote_count[2]+1.5*iqr_vote_count))
+```
+Notice changes to distributions of both attributes
+```{r}
+popularityplot <- density(movies_study$popularity, na.rm = TRUE)
+plot(popularityplot, main="Kernel Density of Popularity")
+polygon(popularityplot, col="red", border="blue")
+
+votecountplot <- density(movies_study$vote_count)
+plot(votecountplot, main="Kernel Density of Vote Count")
+polygon(votecountplot, col="red", border="blue")
+```
+Summary statistics and correlation analysis
+```{r}
+str(movies_study)
+sapply(movies_study, mean, na.rm=TRUE)
+
+num_movies_study <- movies_study[, sapply(movies_study, is.numeric)]
+corrmovies <- cor(num_movies_study, use="pairwise.complete.obs")
+corrplot(corrmovies, method = "number")
+
+kruskal.test(revenue ~ genre_1, data = movies_study)
+kruskal.test(revenue ~ genre_2, data = movies_study)
+kruskal.test(revenue ~ prodcomp_1, data = movies_study)
+kruskal.test(revenue ~ prodcount_1, data = movies_study)
+kruskal.test(revenue ~ release_month, data = movies_study)
+kruskal.test(vote_average ~ genre_1, data = movies_study)
+kruskal.test(vote_average ~ genre_2, data = movies_study)
+kruskal.test(vote_average ~ prodcomp_1, data = movies_study)
+kruskal.test(vote_average ~ prodcount_1, data = movies_study)
+kruskal.test(vote_average ~ release_month, data = movies_study)
+kruskal.test(popularity ~ genre_1, data = movies_study)
+kruskal.test(popularity ~ genre_2, data = movies_study)
+kruskal.test(popularity ~ prodcomp_1, data = movies_study)
+kruskal.test(popularity ~ prodcount_1, data = movies_study)
+kruskal.test(popularity ~ release_month, data = movies_study)
+```
+Building a linear regression model
+```{r}
+linearmodel_revenue <- lm(revenue ~ budget + popularity + vote_average + genre_1 + prodcount_1 + release_year + release_month, data = movies_study, na.action = na.omit)
+summary(linearmodel_revenue)
+
+linearmodel_vote_average <- lm(vote_average ~ budget + popularity + revenue + genre_1 + prodcount_1 + release_year + release_month, data = movies_study, na.action = na.omit)
+summary(linearmodel_vote_average)
+
+linearmodel_popularity <- lm(popularity ~ budget + vote_average + revenue + genre_1 + prodcount_1 + release_year + release_month, data = movies_study, na.action = na.omit)
+summary(linearmodel_popularity)
+```
+
